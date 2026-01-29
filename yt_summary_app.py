@@ -9,7 +9,10 @@ from youtube_transcript_api import (
     YouTubeTranscriptApi,
     TranscriptsDisabled,
     NoTranscriptFound,
+    RequestBlocked,   # <- new
 )
+from youtube_transcript_api.proxies import WebshareProxyConfig, GenericProxyConfig  # <- new
+
 
 from langchain. text_splitter import RecursiveCharacterTextSplitter
 from langchain. prompts import PromptTemplate
@@ -21,6 +24,55 @@ from groq import RateLimitError
 load_dotenv()
 if not os.getenv("GROQ_API_KEY"):
     raise ValueError("Missing GROQ_API_KEY environment variable")
+def _get_ytt_api():
+    """
+    Initialize YouTubeTranscriptApi with proxy support if credentials are present.
+    Priority:
+     1) Webshare rotating residential proxies via WEBSHARE_USERNAME / WEBSHARE_PASSWORD
+     2) Generic HTTP/HTTPS proxies via HTTP_PROXY / HTTPS_PROXY
+     3) Default direct mode (no proxy)
+    """
+    # Webshare rotating residential proxy (recommended if you purchased residential plan)
+    ws_user = os.getenv("WEBSHARE_USERNAME")
+    ws_pass = os.getenv("WEBSHARE_PASSWORD")
+    ws_locations = os.getenv("WEBSHARE_LOCATIONS")  # optional comma-separated, e.g. "us,de"
+
+    if ws_user and ws_pass:
+        locs = None
+        if ws_locations:
+            locs = [loc.strip() for loc in ws_locations.split(",") if loc.strip()]
+        try:
+            if locs:
+                proxy_cfg = WebshareProxyConfig(
+                    proxy_username=ws_user,
+                    proxy_password=ws_pass,
+                    filter_ip_locations=locs
+                )
+            else:
+                proxy_cfg = WebshareProxyConfig(
+                    proxy_username=ws_user,
+                    proxy_password=ws_pass
+                )
+            return YouTubeTranscriptApi(proxy_config=proxy_cfg)
+        except Exception as e:
+            # Fall back to non-proxy if initializing Webshare config fails,
+            # but log a message for debugging.
+            st.warning(f"Could not initialize Webshare proxy: {e}. Falling back to default fetch (may be blocked).")
+            return YouTubeTranscriptApi()
+
+    # Generic proxies (HTTP / HTTPS)
+    http_proxy = os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
+    https_proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+    if http_proxy or https_proxy:
+        try:
+            proxy_cfg = GenericProxyConfig(http_url=http_proxy, https_url=https_proxy)
+            return YouTubeTranscriptApi(proxy_config=proxy_cfg)
+        except Exception as e:
+            st.warning(f"Could not initialize generic proxy: {e}. Falling back to default fetch.")
+            return YouTubeTranscriptApi()
+
+    # Default, direct (no proxy)
+    return YouTubeTranscriptApi()
 
 
 map_prompt = PromptTemplate(
@@ -78,28 +130,47 @@ def extract_video_id(url_or_id: str) -> str | None:
     return None
 
 
-def extract_transcript(url:  str, languages: List[str] = ["en", "hi"]) -> str:
+def extract_transcript(url: str, languages: List[str] = ["en", "hi"]) -> str:
     vid = extract_video_id(url)
     if not vid:
         st.error("❌ Could not parse a valid YouTube video ID.")
         return ""
 
+    ytt_api = _get_ytt_api()
+
     try:
-        fetched = YouTubeTranscriptApi().fetch(
+        fetched = ytt_api.fetch(
             video_id=vid,
             languages=languages,
         )
-    except TranscriptsDisabled: 
+    except TranscriptsDisabled:
         st.error("🎙️ Captions disabled or unavailable for this video.")
         return ""
-    except NoTranscriptFound: 
+    except NoTranscriptFound:
         st.error("❓ Transcript not found for requested languages.")
         return ""
+    except RequestBlocked as e:
+        # Specific error when YouTube blocks the IP (common on cloud hosts)
+        st.error(
+            "🚫 YouTube blocked transcript access from this server (RequestBlocked).\n\n"
+            "Possible fixes:\n"
+            "  • If you have Webshare rotating residential proxies, set WEBSHARE_USERNAME and WEBSHARE_PASSWORD as env vars.\n"
+            "  • Or paste the transcript manually (or upload a .txt) — use the manual input option.\n\n"
+            "Note: Using proxies may incur cost and YouTube may still block some IPs. Proxies are optional."
+        )
+        print("YouTube RequestBlocked:", e)
+        return ""
     except Exception as e:
-        st.error(f"Unexpected error fetching transcript: {e}")
+        # Generic fallback (includes IpBlocked, network errors, etc.)
+        st.error(
+            "Unexpected error fetching transcript: "
+            f"{e}\n\nThis often means YouTube blocked requests from this server.\n"
+            "If you want to use rotating residential proxies, set WEBSHARE_USERNAME and WEBSHARE_PASSWORD in your environment."
+        )
+        print("Unexpected transcript fetch error:", e)
         return ""
 
-    return " ".join(snippet. text. strip() for snippet in fetched)
+    return " ".join(snippet.text.strip() for snippet in fetched)
 
 
 def summarize_transcript(transcript: str) -> str:
