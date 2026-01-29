@@ -1,0 +1,43 @@
+# Environment
+.env
+.venv/
+. venv1/
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py. class
+*.so
+. Python
+
+# Vector stores
+Faiss_index/
+*.faiss
+*.pkl
+
+# Streamlit
+.streamlit/
+. streamlit/secrets.toml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+. DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Build
+build/
+dist/
+*.egg-info/
